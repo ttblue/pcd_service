@@ -11,3 +11,13 @@
 *.lai
 *.la
 *.a
+
+# Build files
+*bin/*
+*build/*
+*Makefile
+*srv_gen*
+*cmake_install.cmake
+*CMakeFiles/*
+*CMakeCache.txt
+*clouds/

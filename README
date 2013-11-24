@@ -1,4 +1,4 @@
 pcd_service
 ===========
-
+Service to save point-clouds published on a topic to PCD files.
 Ankush's code on saving point clouds + other stuff.

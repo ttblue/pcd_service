@@ -1,0 +1,15 @@
+<package>
+  <description brief="pcd_service">
+     saves pcd from point-clouds passed to it.
+  </description>
+  <author>Ankush Gupta</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/pcd_service</url>
+  <depend package="roscpp"/>
+  <depend package="sensor_msgs"/>
+  <depend package="geometry_msgs"/>
+  <depend package="tf"/>
+  <depend package="eigen_conversions"/>
+  <depend package="pcl_conversions"/>
+</package>
