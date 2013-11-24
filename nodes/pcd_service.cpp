@@ -19,7 +19,7 @@ bool saveData (pcd_service::PCDData::Request &req,
 
   // write the point-clouds and transform data to files:
   pcl::io::savePCDFileASCII (req.fname, *cloud_in);
-  return true; 
+  return true;
 }
 
 

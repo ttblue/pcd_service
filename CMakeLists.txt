@@ -36,6 +36,8 @@ rosbuild_gensrv()
 rosbuild_add_executable(pcd_service nodes/pcd_service.cpp)
 target_link_libraries(pcd_service ${PCL_LIBRARIES})
 
-rosbuild_add_executable(view_pcd nodes/pcd_viewer.cpp)
+rosbuild_add_executable(view_pcd nodes/view.cpp)
 target_link_libraries(view_pcd ${PCL_LIBRARIES})
 
+rosbuild_add_executable(test_icp nodes/test_icp.cpp)
+target_link_libraries(test_icp ${PCL_LIBRARIES})
