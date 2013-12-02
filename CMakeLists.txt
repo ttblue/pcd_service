@@ -41,3 +41,5 @@ target_link_libraries(view_pcd ${PCL_LIBRARIES})
 
 rosbuild_add_executable(test_icp nodes/test_icp.cpp)
 target_link_libraries(test_icp ${PCL_LIBRARIES})
+
+rosbuild_add_executable(test_svd nodes/test_svd.cpp)

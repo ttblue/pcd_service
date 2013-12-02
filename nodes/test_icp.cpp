@@ -9,8 +9,14 @@
 #include <pcl/visualization/pcl_visualizer.h>
 #include <pcl/visualization/cloud_viewer.h>
 #include <pcl/sample_consensus/model_types.h>
+#include <pcl/sample_consensus/ransac.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/sample_consensus/sac_model_plane.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/common/transforms.h>
+#include <pcl/common/common.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/filters/median_filter.h>
 
 //#include <ar_track_service/MarkerPositions.h>
 
@@ -19,8 +25,14 @@ using namespace std;
 
 typedef Eigen::Matrix<bool,Eigen::Dynamic,1> VectorXb;
 typedef pcl::PointXYZRGB ColorPoint;
+typedef pcl::PointXYZRGBNormal ColorPointNormal;
 typedef pcl::PointCloud<ColorPoint> ColorCloud;
+typedef pcl::PointCloud<ColorPointNormal> ColorNormalCloud;
 typedef ColorCloud::Ptr ColorCloudPtr;
+typedef ColorNormalCloud::Ptr ColorNormalCloudPtr;
+typedef pcl::registration::TransformationEstimationPointToPlaneLLS<ColorPointNormal, ColorPointNormal> PointToPlane;
+typedef pcl::visualization::PointCloudColorHandlerCustom<ColorPoint> ColorHandlerT;
+typedef pcl::visualization::PointCloudColorHandlerCustom<ColorPointNormal> ColorHandlerNT;
 
 /**
    Finds AR markers and their transforms from point clouds.
@@ -160,6 +172,20 @@ ColorCloudPtr downsampleCloud(const ColorCloudPtr in, float sz) {
 }
 
 
+void normalEstimation(ColorCloudPtr& cloud_in, ColorNormalCloudPtr& cloud_out)
+{
+  // Create the normal estimation class, and pass the input dataset to it
+  pcl::NormalEstimation<ColorPoint, ColorPointNormal> ne;
+  ne.setInputCloud (cloud_in);
+  pcl::search::KdTree<ColorPoint>::Ptr tree (new pcl::search::KdTree<ColorPoint> ());
+  ne.setSearchMethod (tree);
+  ne.setRadiusSearch (0.05);
+  ne.compute (*cloud_out);
+  pcl::copyPointCloud (*cloud_in, *cloud_out);
+}
+
+
+
 /**
    Creates and returns a viewer.
  **/
@@ -171,8 +197,45 @@ boost::shared_ptr<pcl::visualization::PCLVisualizer> View1 ()  {
   return (viewer);
 }
 
+void discard_plane_points (ColorCloudPtr &cloud_in, ColorCloudPtr &cloud_out) {
+  
+  std::vector<int> inlier_indices;
 
-bool icp_refining(ColorCloudPtr cloud1, ColorCloudPtr cloud2) {
+  // created RandomSampleConsensus object and compute the appropriated model
+  pcl::SampleConsensusModelPlane<ColorPoint>::Ptr
+    model_p (new pcl::SampleConsensusModelPlane<ColorPoint> (cloud_in));
+
+
+  pcl::RandomSampleConsensus<ColorPoint> ransac (model_p);
+  ransac.setDistanceThreshold (.02);
+  ransac.computeModel();
+  ransac.getInliers(inlier_indices);
+
+  // get the points which do not lie on a plane:
+  pcl::ExtractIndices<ColorPoint> extract;
+  extract.setInputCloud (cloud_in);
+  pcl::PointIndices::Ptr inliers (new pcl::PointIndices);
+  inliers->indices = inlier_indices;
+  extract.setIndices (inliers);
+  extract.setNegative (true);
+  extract.filter (*cloud_out);
+
+}
+
+void median_filter (ColorCloudPtr &cloud_in, ColorCloudPtr &cloud_out) {
+  pcl::MedianFilter<ColorPoint> medf;
+  medf.setWindowSize(5);
+  medf.setMaxAllowedMovement(0.001);
+  medf.setInputCloud (cloud_in);
+  medf.filter (*cloud_out);
+}
+
+bool icp_refining(ColorCloudPtr cloud1_orig, ColorCloudPtr cloud2_orig) {
+
+  median_filter(cloud1_orig, cloud1_orig);
+  median_filter(cloud2_orig, cloud2_orig);
+
+  ColorCloudPtr cloud1 (new ColorCloud()), cloud2 (new ColorCloud());
 
   //Boxfilter the clouds around AR markers.
   Matrix3f eye = Matrix3f::Identity();
@@ -180,14 +243,20 @@ bool icp_refining(ColorCloudPtr cloud1, ColorCloudPtr cloud2) {
   Vector3f ar3_1(0.185515060929,0.0206483846594, 0.826703742698);
   Vector3f mins1  = ar3_1 - Vector3f(1.0,0.5,0.4);
   Vector3f maxes1  = ar3_1 + Vector3f(0.50,0.4,1.1);
-  cloud1 = orientedBoxFilter(cloud1, eye, mins1, maxes1);
+  cloud1_orig = orientedBoxFilter(cloud1_orig, eye, mins1, maxes1);
+  discard_plane_points(cloud1_orig, cloud1);
+  pcl::io::savePCDFileASCII ("cloud1_mf_noplane.pcd", *cloud1);
+  //cloud1 =  downsampleCloud(cloud1, 0.005);
+
   //pcl::io::savePCDFileASCII ("cloud1_filtered.pcd", *cloud1);
 
   // Cloud 2 -- Hardcoding values to not deal with PCL-1.5
   Vector3f ar3_2(0.175211839792, -0.153883984427, 1.03197535468);
   Vector3f mins2  = ar3_2 - Vector3f(1.0,0.5,0.8);
   Vector3f maxes2  = ar3_2 + Vector3f(0.50,0.6,1.1);
-  cloud2 = orientedBoxFilter(cloud2, eye, mins2, maxes2);
+  cloud2_orig = orientedBoxFilter(cloud2_orig, eye, mins2, maxes2);
+  discard_plane_points(cloud2_orig, cloud2);
+  //cloud2 =  downsampleCloud(cloud2, 0.005);
   //pcl::io::savePCDFileASCII ("cloud2_filtered.pcd", *cloud2);
   /*
 array([[ 0.58331438, -0.54525825,  0.60202805, -0.62187315],
@@ -205,22 +274,35 @@ array([[ 0.58331438, -0.54525825,  0.60202805, -0.62187315],
   icp_guess.block(0,0,3,3) = r;
   icp_guess.block(0,3,3,1) = t;
   //icp_guess.linear() = r; icp_guess.translation() = t;
+  pcl::transformPointCloud(*cloud2,*cloud2,icp_guess);
+  //pcl::io::savePCDFileASCII ("cloud2_mf_noplane.pcd", *cloud2);
+  //pcl::io::savePCDFileASCII ("cloud2_filtered_transformed.pcd", *cloud2);
 
   //Eigen::Matrix4f icp_guess;
   //icp_guess.block(0,0,3,3) = guess_tfm.linear().cast<float>().transpose();
   //icp_guess.block(0,3,3,1) = guess_tfm.translation().cast<float>();
 
+  ColorNormalCloudPtr cloudn1 (new ColorNormalCloud ()), cloudn2 (new ColorNormalCloud ());
+  cout<<"Finding normals for pc1."<<endl;
+  //normalEstimation(cloud1, cloudn1);
+  cout<<"Finding normals for pc2."<<endl;
+  //normalEstimation(cloud2, cloudn2);
 
-  pcl::GeneralizedIterativeClosestPoint<ColorPoint, ColorPoint> icp;
-  icp.setInputSource(cloud1);
-  icp.setInputTarget(cloud2);
+  cout<<"Setting up ICP."<<endl;
 
-  icp.setMaximumIterations(200);
+  /*  pcl::GeneralizedIterativeClosestPoint<ColorPointNormal, ColorPointNormal> icp;
+  icp.setInputSource(cloudn1);
+  icp.setInputTarget(cloudn2);
+
+  boost::shared_ptr<PointToPlane> point_to_plane(new PointToPlane());
+  icp.setTransformationEstimation(point_to_plane);
+
+  icp.setMaximumIterations(300);
   icp.setRANSACIterations(1000);
   icp.setRANSACOutlierRejectionThreshold(0.05);
   icp.setMaxCorrespondenceDistance(0.05);
-  icp.setTransformationEpsilon(1e-10);
-  icp.setEuclideanFitnessEpsilon(1e-10);
+  icp.setTransformationEpsilon(1e-8);
+  icp.setEuclideanFitnessEpsilon(1e-8);
 
   std::cout<<"Max iterations: "<<icp.getMaximumIterations ()<<std::endl;
   std::cout<<"Max RANSAC iterations: "<<icp.getRANSACIterations ()<<std::endl;
@@ -230,30 +312,46 @@ array([[ 0.58331438, -0.54525825,  0.60202805, -0.62187315],
   // Set the transformation epsilon (criterion 2)
   std::cout<<"Transformation epsilon: "<< icp.getTransformationEpsilon ()<<std::endl;
   // Set the euclidean distance difference epsilon (criterion 3)
-  std::cout<<"Euclidean fitness epsilon: "<< icp.getEuclideanFitnessEpsilon ()<<std::endl;
+  std::cout<<"Euclidean fitness epsilon: "<< icp.getEuclideanFitnessEpsilon()<<std::endl;*/
 
-  std::cout<<"PC1 size: "<<cloud1->points.size()<<std::endl;
-  std::cout<<"PC2 size: "<<cloud2->points.size()<<std::endl;
+  //std::cout<<"PC1 size: "<<cloudn1->points.size()<<std::endl;
+  //std::cout<<"PC2 size: "<<cloudn2->points.size()<<std::endl;
 
-  ColorCloudPtr Final (new ColorCloud());
-  icp.align(*Final, icp_guess);
-  std::cout<<"Has converged: "<<icp.hasConverged()<<" with score: "<<icp.getFitnessScore()<<endl;
+  ColorNormalCloudPtr Final (new ColorNormalCloud());
+  //icp.align(*Final, Matrix4f::Identity());
+  //std::cout<<"Has converged: "<<icp.hasConverged()<<" with score: "<<icp.getFitnessScore()<<endl;
 
   cout<<"Initial rel tfm:\n"<<icp_guess<<endl;
-  cout<<"ICP rel tfm:\n"<<icp.getFinalTransformation()<<endl;
+  //cout<<"ICP rel tfm:\n"<<icp.getFinalTransformation()<<endl;
+
+  Matrix4f tfm2 = Matrix4f::Identity();
   
-  Matrix4f ntfm = icp.getFinalTransformation().inverse();
-  pcl::transformPointCloud(*Final,*Final,ntfm);
+  tfm2.row(0)  = Vector4f(9.99991224e-01,   4.14990513e-03,   5.73805956e-04,   6.51068157e-03);
+  tfm2.row(1)  = Vector4f(-4.15057632e-03,   9.99990698e-01,   1.17350020e-03,   3.24235007e-03);
+  tfm2.row(2)  = Vector4f(-5.68930704e-04,  -1.17587153e-03,   9.99999147e-01,  -3.94321928e-03);
+  /*
+  T_h_k: [[  9.99991224e-01   4.14990513e-03   5.73805956e-04   6.51068157e-03]
+	  [ -4.15057632e-03   9.99990698e-01   1.17350020e-03   3.24235007e-03]
+	  [ -5.68930704e-04  -1.17587153e-03   9.99999147e-01  -3.94321928e-03]
+	  [  0.00000000e+00   0.00000000e+00   0.00000000e+00   1.00000000e+00]]*/
+  pcl::transformPointCloud(*cloud2,*cloud2,tfm2);
+  pcl::transformPointCloud(*cloud2_orig,*cloud2_orig,tfm2*icp_guess);
+  
+  //Matrix4f ntfm = icp.getFinalTransformation().inverse();
+  //pcl::transformPointCloud(*cloud2,*cloud2,icp.getFinalTransformation());
 
   boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer = View1();
-  pcl::visualization::PointCloudColorHandlerRGBField<ColorPoint> rgb1(cloud1);
-  pcl::visualization::PointCloudColorHandlerRGBField<ColorPoint> rgb2(cloud2);
-  pcl::visualization::PointCloudColorHandlerRGBField<ColorPoint> rgb3(Final);
+  pcl::visualization::PointCloudColorHandlerRGBField<ColorPoint> rgb1(cloud1_orig);
+  pcl::visualization::PointCloudColorHandlerRGBField<ColorPoint> rgb2(cloud2_orig);
+  //pcl::visualization::PointCloudColorHandlerRGBField<ColorPointNormal> rgb3(Final);
 
   
-  //viewer->addPointCloud<ColorPoint> (cloud1,rgb1, "cloud1");
-  viewer->addPointCloud<ColorPoint> (cloud2,rgb2, "cloud2");
-  viewer->addPointCloud<ColorPoint> (Final,rgb3, "Final");
+  //viewer->addPointCloud<ColorPoint> (cloud1, ColorHandlerT(cloud1, 0.,0.,255.), "cloud1");
+  viewer->addPointCloud<ColorPoint> (cloud1_orig,rgb1, "cloud1");
+  //viewer->addPointCloud<ColorPoint> (cloud2, ColorHandlerT(cloud2, 255.,0.,0.), "cloud2");
+  viewer->addPointCloud<ColorPoint> (cloud2_orig,rgb2, "cloud2");
+  //viewer->addPointCloud<ColorPointNormal> (Final,rgb3, "Final");
+  //viewer->addPointCloud<ColorPointNormal> (Final,ColorHandlerNT(Final, 0.,0.,255.), "Final");
   while (!viewer->wasStopped()) {
     viewer->spinOnce (100);
     boost::this_thread::sleep (boost::posix_time::microseconds (100000));
